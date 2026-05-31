@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>SomnoAlert Sleep Detector</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <div class="app-shell">
+    <header>
+      <h1>SomnoAlert</h1>
+      <p>Live Server frontend for the Flask sleep detector.</p>
+    </header>
+
+    <section class="card status-card">
+      <div>
+        <span class="label">Detector status</span>
+        <h2 id="runningStatus">Loading...</h2>
+      </div>
+      <div>
+        <span class="label">Current message</span>
+        <p id="statusMessage">Please start the detector backend on port 5000.</p>
+      </div>
+      <div class="status-grid">
+        <div>
+          <span class="label">Eyes status</span>
+          <p id="eyesStatus">--</p>
+        </div>
+        <div>
+          <span class="label">Alarm</span>
+          <p id="alarmStatus">--</p>
+        </div>
+        <div>
+          <span class="label">Closed time</span>
+          <p id="elapsedTime">0.00s</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="card video-card">
+      <video id="videoPreview" autoplay playsinline muted></video>
+      <p class="hint">Browser will ask for camera permission when you click Start Detection.</p>
+    </section>
+
+    <section class="card actions-card">
+      <button id="startButton" class="button button-primary">Start Detection</button>
+      <button id="stopButton" class="button button-secondary">Stop Detection</button>
+      <p class="hint">Start the Flask backend first, then open this page with Live Server.</p>
+    </section>
+  </div>
+
+  <script>
+    const API_BASE = 'http://127.0.0.1:5000';
+    const runningStatus = document.getElementById('runningStatus');
+    const statusMessage = document.getElementById('statusMessage');
+    const eyesStatus = document.getElementById('eyesStatus');
+    const alarmStatus = document.getElementById('alarmStatus');
+    const elapsedTime = document.getElementById('elapsedTime');
+    const startButton = document.getElementById('startButton');
+    const stopButton = document.getElementById('stopButton');
+    const videoPreview = document.getElementById('videoPreview');
+
+    let mediaStream = null;
+    let captureInterval = null;
+    let isRunning = false;
+
+    function setButtonState(enabled) {
+      startButton.disabled = !enabled;
+      stopButton.disabled = !enabled;
+    }
+
+    async function fetchStatus() {
+      try {
+        const response = await fetch(`${API_BASE}/status`);
+        const data = await response.json();
+
+        runningStatus.textContent = data.running ? 'Running' : 'Stopped';
+        runningStatus.className = data.running ? 'status-active' : 'status-inactive';
+        statusMessage.textContent = data.message;
+        eyesStatus.textContent = data.eyes_closed ? 'Closed' : 'Open';
+        alarmStatus.textContent = data.alarm_status || (data.alarm_triggered ? 'Ring' : 'Normal');
+        elapsedTime.textContent = data.elapsed_time.toFixed(2) + 's';
+        isRunning = data.running;
+        setButtonState(true);
+      } catch (error) {
+        runningStatus.textContent = 'Disconnected';
+        runningStatus.className = 'status-inactive';
+        statusMessage.textContent = 'Start the Flask backend on port 5000 first.';
+        isRunning = false;
+        setButtonState(false);
+      }
+    }
+
+    async function startCamera() {
+      if (mediaStream) {
+        return;
+      }
+
+      try {
+        mediaStream = await navigator.mediaDevices.getUserMedia({ video: true });
+        videoPreview.srcObject = mediaStream;
+        await new Promise((resolve) => {
+          videoPreview.onloadedmetadata = () => resolve();
+        });
+      } catch (error) {
+        statusMessage.textContent = 'Camera permission denied or camera unavailable.';
+        throw error;
+      }
+    }
+
+    function stopCamera() {
+      if (mediaStream) {
+        mediaStream.getTracks().forEach((track) => track.stop());
+        mediaStream = null;
+      }
+      videoPreview.srcObject = null;
+    }
+
+    async function sendFrame() {
+      if (!mediaStream || !isRunning || videoPreview.videoWidth === 0) {
+        return;
+      }
+
+      const canvas = document.createElement('canvas');
+      canvas.width = videoPreview.videoWidth;
+      canvas.height = videoPreview.videoHeight;
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(videoPreview, 0, 0, canvas.width, canvas.height);
+
+      const imageBase64 = canvas.toDataURL('image/jpeg', 0.7);
+      try {
+        const response = await fetch(`${API_BASE}/detect`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ image: imageBase64 }),
+        });
+        if (!response.ok) {
+          const data = await response.json();
+          statusMessage.textContent = data.message || 'Detection request failed.';
+        }
+      } catch (error) {
+        statusMessage.textContent = 'Unable to send camera frame to backend.';
+      }
+    }
+
+    async function startDetection() {
+      let backendStarted = false;
+
+      try {
+        const response = await fetch(`${API_BASE}/start`, { method: 'POST' });
+        const data = await response.json();
+        statusMessage.textContent = data.message;
+        if (!data.success) {
+          setButtonState(false);
+          return;
+        }
+        backendStarted = true;
+        await fetchStatus();
+      } catch (error) {
+        statusMessage.textContent = 'Unable to contact backend on port 5000. Camera not started.';
+        setButtonState(false);
+        return;
+      }
+
+      try {
+        await startCamera();
+      } catch {
+        if (backendStarted) {
+          await fetch(`${API_BASE}/stop`, { method: 'POST' }).catch(() => {});
+        }
+        setButtonState(false);
+        return;
+      }
+
+      if (captureInterval) {
+        clearInterval(captureInterval);
+      }
+      captureInterval = setInterval(sendFrame, 500);
+    }
+
+    async function stopDetection() {
+      clearInterval(captureInterval);
+      captureInterval = null;
+      stopCamera();
+
+      try {
+        const response = await fetch(`${API_BASE}/stop`, { method: 'POST' });
+        const data = await response.json();
+        statusMessage.textContent = data.message;
+      } catch (error) {
+        statusMessage.textContent = 'Unable to contact backend on port 5000. Camera stopped locally.';
+      }
+
+      await fetchStatus();
+    }
+
+    startButton.addEventListener('click', startDetection);
+    stopButton.addEventListener('click', stopDetection);
+
+    fetchStatus();
+    setInterval(fetchStatus, 1000);
+  </script>
+</body>
+</html>

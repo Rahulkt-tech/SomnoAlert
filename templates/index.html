@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>SomnoAlert Sleep Detector</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <div class="app-shell">
+    <header>
+      <h1>SomnoAlert</h1>
+      <p>Web interface for sleep detection and alarm control.</p>
+    </header>
+
+    <section class="card status-card">
+      <div>
+        <span class="label">Detector status</span>
+        <h2 id="runningStatus">Loading...</h2>
+      </div>
+      <div>
+        <span class="label">Current message</span>
+        <p id="statusMessage">Please start the detector.</p>
+      </div>
+      <div class="status-grid">
+        <div>
+          <span class="label">Eyes status</span>
+          <p id="eyesStatus">--</p>
+        </div>
+        <div>
+          <span class="label">Alarm</span>
+          <p id="alarmStatus">--</p>
+        </div>
+        <div>
+          <span class="label">Closed time</span>
+          <p id="elapsedTime">0.00s</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="card camera-card">
+      <div class="video-container" style="text-align: center; margin-top: 1rem;">
+        <video id="videoElement" autoplay playsinline style="max-width: 100%; border-radius: 8px; display: none;"></video>
+        <canvas id="canvasElement" style="display: none;"></canvas>
+      </div>
+    </section>
+
+    <section class="card actions-card">
+      <button id="startButton" class="button button-primary">Start Detection</button>
+      <button id="stopButton" class="button button-secondary">Stop Detection</button>
+      <p class="hint">Click Start to turn on the camera and detect sleep.</p>
+    </section>
+  </div>
+
+  <script>
+    const runningStatus = document.getElementById('runningStatus');
+    const statusMessage = document.getElementById('statusMessage');
+    const eyesStatus = document.getElementById('eyesStatus');
+    const alarmStatus = document.getElementById('alarmStatus');
+    const elapsedTime = document.getElementById('elapsedTime');
+    const startButton = document.getElementById('startButton');
+    const stopButton = document.getElementById('stopButton');
+    const video = document.getElementById('videoElement');
+    const canvas = document.getElementById('canvasElement');
+    const ctx = canvas.getContext('2d');
+
+    let isRunning = false;
+    let detectInterval = null;
+    let stream = null;
+
+    async function updateStatusUI(data) {
+        runningStatus.textContent = data.running ? 'Running' : 'Stopped';
+        runningStatus.className = data.running ? 'status-active' : 'status-inactive';
+        statusMessage.textContent = data.message;
+        eyesStatus.textContent = data.eyes_closed ? 'Closed' : 'Open';
+        
+        if (data.eyes_closed) {
+            alarmStatus.textContent = 'sleeping';
+            alarmStatus.style.color = 'red';
+        } else {
+            alarmStatus.textContent = data.alarm_triggered ? 'Triggered' : 'Normal';
+            alarmStatus.style.color = 'green';
+        }
+        
+        elapsedTime.textContent = data.elapsed_time.toFixed(2) + 's';
+    }
+
+    async function fetchStatus() {
+      try {
+        const response = await fetch('/status');
+        const data = await response.json();
+        updateStatusUI(data);
+        isRunning = data.running;
+      } catch (error) {
+        runningStatus.textContent = 'Error';
+        statusMessage.textContent = 'Unable to fetch status.';
+      }
+    }
+
+    async function sendFrame() {
+        if (!isRunning) return;
+        if (video.videoWidth === 0 || video.videoHeight === 0) return;
+        
+        canvas.width = video.videoWidth;
+        canvas.height = video.videoHeight;
+        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+        
+        const imageData = canvas.toDataURL('image/jpeg', 0.8);
+        
+        try {
+            const response = await fetch('/detect', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ image: imageData })
+            });
+            const result = await response.json();
+            if (result.success) {
+                updateStatusUI(result.status);
+            }
+        } catch (error) {
+            console.error('Error sending frame:', error);
+        }
+    }
+
+    async function startCamera() {
+        try {
+            stream = await navigator.mediaDevices.getUserMedia({ video: true });
+            video.srcObject = stream;
+            video.style.display = 'block';
+            return true;
+        } catch (err) {
+            console.error("Camera error:", err);
+            statusMessage.textContent = "Error accessing camera.";
+            return false;
+        }
+    }
+
+    function stopCamera() {
+        if (stream) {
+            stream.getTracks().forEach(track => track.stop());
+            stream = null;
+        }
+        video.style.display = 'none';
+        video.srcObject = null;
+    }
+
+    async function startDetection() {
+        const camStarted = await startCamera();
+        if (!camStarted) return;
+
+        try {
+            const response = await fetch('/start', { method: 'POST' });
+            const data = await response.json();
+            statusMessage.textContent = data.message;
+            if (data.success) {
+                isRunning = true;
+                if (detectInterval) clearInterval(detectInterval);
+                detectInterval = setInterval(sendFrame, 200); // 5 FPS
+            }
+        } catch (error) {
+            statusMessage.textContent = 'Unable to contact the backend.';
+        }
+    }
+
+    async function stopDetection() {
+        if (detectInterval) {
+            clearInterval(detectInterval);
+            detectInterval = null;
+        }
+        stopCamera();
+        isRunning = false;
+
+        try {
+            const response = await fetch('/stop', { method: 'POST' });
+            const data = await response.json();
+            statusMessage.textContent = data.message;
+            await fetchStatus();
+        } catch (error) {
+            statusMessage.textContent = 'Unable to contact the backend.';
+        }
+    }
+
+    startButton.addEventListener('click', startDetection);
+    stopButton.addEventListener('click', stopDetection);
+
+    fetchStatus();
+  </script>
+</body>
+</html>
