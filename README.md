@@ -1,5 +1,6 @@
 # SomnoAlert Sleep Detector
-
+AI-Powered Real-Time Drowsiness Detection System
+SomnoAlert is a real-time drowsiness detection system that uses facial landmark analysis to monitor eye activity through your webcam and triggers an alarm when prolonged eye closure is detected — helping prevent accidents caused by fatigue or microsleep.
 This project uses Flask to serve a web user interface for the sleep detection app.
 
 ## How to run
@@ -27,3 +28,7 @@ This project uses Flask to serve a web user interface for the sleep detection ap
 - The Flask app serves `templates/index.html` and `static/style.css`.
 - Use the `Start Detection` button in the web UI to begin camera monitoring.
 - The app also opens the browser automatically when it starts.
+
+🔍 How It Works
+SomnoAlert captures live video frames from your browser's webcam, analyzes facial landmarks using Google MediaPipe's FaceLandmarker model, and tracks the distance between the upper and lower eyelid landmarks of both eyes. If both eyes remain closed for more than 2 seconds, an audio alarm is triggered immediately.
+To avoid false alarms, a 7-frame smoothing buffer ensures that brief blinks or momentary camera noise don't set off the alert.
